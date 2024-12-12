@@ -46,7 +46,7 @@ if page == "Dashboard":
         if runs:
             latest_run = runs[0]
             st.metric("Latest Run Loss", 
-                     f"{json.loads(latest_run['metrics'])['train_loss']:.4f}")
+                     f"{latest_run['metrics']['train_loss']:.4f}")
     
     # Visualizations
     st.subheader("Training Metrics")
