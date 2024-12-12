@@ -117,7 +117,7 @@ elif page == "New Training Run":
         # Model selection
         model_name = st.selectbox(
             "Select Model",
-            ["mistralai/Mistral-7B-v0.1", "gpt2", "facebook/opt-350m"]
+            ["gpt2", "bert-base-uncased", "distilbert-base-uncased"]
         )
         
         # Dataset selection
