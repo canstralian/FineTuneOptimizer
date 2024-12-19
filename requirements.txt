@@ -1,0 +1,10 @@
+# This file lists all dependencies required for the project
+
+numpy==1.23.3
+pandas==1.4.3
+requests==2.28.1
+flask==2.2.2
+pytest==7.1.2
+huggingface_hub==
+transformers
+datasets
