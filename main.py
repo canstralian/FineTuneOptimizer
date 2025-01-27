@@ -1,184 +1,101 @@
-import streamlit as st
-import pandas as pd
-from database import (
-    init_db, save_training_run, get_training_runs,
-    save_dataset, get_datasets
-)
-from models import ModelTrainer
-from visualizations import (
-    create_metrics_comparison,
-    create_hyperparameter_correlation,
-    create_dataset_summary
-)
-from utils import display_run_details, format_size
+import os
+import psycopg2
+from psycopg2 import pool
+from psycopg2.extras import RealDictCursor
 import json
+import logging
 
-# Initialize database
-init_db()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
-# Page configuration
-st.set_page_config(
-    page_title="Fine-Tuning Optimization Dashboard",
-    page_icon="📊",
-    layout="wide"
+# Connection Pool
+connection_pool = pool.SimpleConnectionPool(
+    1, 10,  # Min and max connections
+    host=os.environ['PGHOST'],
+    database=os.environ['PGDATABASE'],
+    user=os.environ['PGUSER'],
+    password=os.environ['PGPASSWORD'],
+    port=os.environ['PGPORT']
 )
 
-# Sidebar navigation
-page = st.sidebar.selectbox(
-    "Navigation",
-    ["Dashboard", "Training Runs", "Datasets", "New Training Run"]
-)
+def get_db_connection():
+    return connection_pool.getconn()
 
-if page == "Dashboard":
-    st.title("Fine-Tuning Optimization Dashboard")
-    
-    # Get data
-    runs = get_training_runs()
-    datasets = get_datasets()
-    
-    # Summary metrics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Runs", len(runs))
-    with col2:
-        st.metric("Total Datasets", len(datasets))
-    with col3:
-        if runs:
-            latest_run = runs[0]
-            st.metric("Latest Run Loss", 
-                     f"{latest_run['metrics']['train_loss']:.4f}")
-    
-    # Visualizations
-    st.subheader("Training Metrics")
-    if runs:
-        fig_loss, fig_metrics = create_metrics_comparison(runs)
-        st.plotly_chart(fig_loss, use_container_width=True)
-        st.plotly_chart(fig_metrics, use_container_width=True)
-        
-        st.subheader("Hyperparameter Analysis")
-        fig_hp = create_hyperparameter_correlation(runs)
-        st.plotly_chart(fig_hp, use_container_width=True)
+def release_db_connection(conn):
+    connection_pool.putconn(conn)
 
-elif page == "Training Runs":
-    st.title("Training Runs")
-    
-    runs = get_training_runs()
-    if runs:
-        # Filter options
-        model_filter = st.multiselect(
-            "Filter by Model",
-            options=list(set(run['model_name'] for run in runs))
+def safe_execute(query: str, params=None, fetch: bool = False, commit: bool = False):
+    """Safely execute a query with connection management."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor if fetch else None) as cur:
+            cur.execute(query, params)
+            if commit:
+                conn.commit()
+            if fetch:
+                return cur.fetchall()
+    except Exception as e:
+        logging.error(f"Error executing query: {e}")
+        conn.rollback()
+        raise
+    finally:
+        release_db_connection(conn)
+
+def init_db():
+    """Initialize database tables"""
+    logging.info("Initializing database tables...")
+    queries = [
+        """
+        CREATE TABLE IF NOT EXISTS training_runs (
+            run_id SERIAL PRIMARY KEY,
+            model_name VARCHAR(100) NOT NULL,
+            dataset_name VARCHAR(100) NOT NULL,
+            hyperparameters JSONB NOT NULL,
+            metrics JSONB NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        
-        filtered_runs = runs
-        if model_filter:
-            filtered_runs = [run for run in runs if run['model_name'] in model_filter]
-        
-        # Display runs
-        for run in filtered_runs:
-            with st.expander(f"Run {run['run_id']} - {run['model_name']}"):
-                display_run_details(run)
-    else:
-        st.info("No training runs available yet.")
-
-elif page == "Datasets":
-    st.title("Dataset Management")
-    
-    # Add new dataset
-    with st.expander("Add New Dataset"):
-        with st.form("new_dataset"):
-            name = st.text_input("Dataset Name")
-            description = st.text_area("Description")
-            size = st.number_input("Number of Examples", min_value=1)
-            
-            if st.form_submit_button("Add Dataset"):
-                save_dataset(name, description, size)
-                st.success("Dataset added successfully!")
-    
-    # Display existing datasets
-    datasets = get_datasets()
-    if datasets:
-        st.subheader("Available Datasets")
-        fig_datasets = create_dataset_summary(datasets)
-        st.plotly_chart(fig_datasets, use_container_width=True)
-        
-        for dataset in datasets:
-            with st.expander(f"{dataset['name']}"):
-                st.write("Description:", dataset['description'])
-                st.write("Size:", format_size(dataset['size']))
-                st.write("Added:", dataset['created_at'])
-    else:
-        st.info("No datasets available yet.")
-
-elif page == "New Training Run":
-    st.title("Start New Training Run")
-    
-    with st.form("new_training"):
-        # Model selection
-        model_name = st.selectbox(
-            "Select Model",
-            ["gpt2", "bert-base-uncased", "distilbert-base-uncased"]
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS datasets (
+            dataset_id SERIAL PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            description TEXT,
+            size INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-        
-        # Dataset selection
-        datasets = get_datasets()
-        dataset_name = st.selectbox(
-            "Select Dataset",
-            [dataset['name'] for dataset in datasets]
-        )
-        
-        # Hyperparameters
-        st.subheader("Hyperparameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            learning_rate = st.number_input(
-                "Learning Rate",
-                min_value=1e-6,
-                max_value=1e-2,
-                value=5e-5,
-                format="%.1e"
-            )
-            num_epochs = st.number_input(
-                "Number of Epochs",
-                min_value=1,
-                max_value=100,
-                value=3
-            )
-        
-        with col2:
-            batch_size = st.selectbox(
-                "Batch Size",
-                [8, 16, 32, 64]
-            )
-            weight_decay = st.number_input(
-                "Weight Decay",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.01
-            )
-        
-        if st.form_submit_button("Start Training"):
-            with st.spinner("Training in progress..."):
-                trainer = ModelTrainer(model_name)
-                dataset = trainer.prepare_dataset(dataset_name)
-                
-                hyperparameters = {
-                    "learning_rate": learning_rate,
-                    "num_epochs": num_epochs,
-                    "batch_size": batch_size,
-                    "weight_decay": weight_decay
-                }
-                
-                metrics = trainer.train(dataset, hyperparameters)
-                
-                # Save results
-                save_training_run(
-                    model_name=model_name,
-                    dataset_name=dataset_name,
-                    hyperparameters=hyperparameters,
-                    metrics=metrics
-                )
-                
-                st.success("Training completed successfully!")
-                st.write("Training Metrics:")
-                st.dataframe(pd.DataFrame([metrics]))
+        """
+    ]
+    for query in queries:
+        safe_execute(query, commit=True)
+
+def save_training_run(model_name: str, dataset_name: str, hyperparameters: dict, metrics: dict) -> int:
+    """Save training run to database"""
+    query = """
+        INSERT INTO training_runs (model_name, dataset_name, hyperparameters, metrics)
+        VALUES (%s, %s, %s, %s)
+        RETURNING run_id
+    """
+    params = (model_name, dataset_name, json.dumps(hyperparameters), json.dumps(metrics))
+    result = safe_execute(query, params=params, fetch=True, commit=True)
+    return result[0]['run_id']
+
+def get_training_runs() -> list:
+    """Fetch all training runs"""
+    query = "SELECT * FROM training_runs ORDER BY created_at DESC"
+    return safe_execute(query, fetch=True)
+
+def save_dataset(name: str, description: str, size: int) -> int:
+    """Save dataset information"""
+    query = """
+        INSERT INTO datasets (name, description, size)
+        VALUES (%s, %s, %s)
+        RETURNING dataset_id
+    """
+    params = (name, description, size)
+    result = safe_execute(query, params=params, fetch=True, commit=True)
+    return result[0]['dataset_id']
+
+def get_datasets() -> list:
+    """Fetch all datasets"""
+    query = "SELECT * FROM datasets ORDER BY created_at DESC"
+    return safe_execute(query, fetch=True)
