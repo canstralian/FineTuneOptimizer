@@ -19,10 +19,20 @@ connection_pool = pool.SimpleConnectionPool(
 )
 
 def get_db_connection():
-    return connection_pool.getconn()
+    """Get a connection from the pool."""
+    try:
+        return connection_pool.getconn()
+    except psycopg2.Error as e:
+        logging.error(f"Error getting connection from pool: {e}")
+        raise
 
 def release_db_connection(conn):
-    connection_pool.putconn(conn)
+    """Release a connection back to the pool."""
+    try:
+        connection_pool.putconn(conn)
+    except psycopg2.Error as e:
+        logging.error(f"Error releasing connection back to pool: {e}")
+        raise
 
 def safe_execute(query: str, params=None, fetch: bool = False, commit: bool = False):
     """Safely execute a query with connection management."""
@@ -34,15 +44,19 @@ def safe_execute(query: str, params=None, fetch: bool = False, commit: bool = Fa
                 conn.commit()
             if fetch:
                 return cur.fetchall()
+    except psycopg2.Error as e:
+        logging.error(f"Database error executing query: {e}")
+        conn.rollback()
+        raise
     except Exception as e:
-        logging.error(f"Error executing query: {e}")
+        logging.error(f"Unexpected error executing query: {e}")
         conn.rollback()
         raise
     finally:
         release_db_connection(conn)
 
 def init_db():
-    """Initialize database tables"""
+    """Initialize database tables."""
     logging.info("Initializing database tables...")
     queries = [
         """
@@ -69,7 +83,7 @@ def init_db():
         safe_execute(query, commit=True)
 
 def save_training_run(model_name: str, dataset_name: str, hyperparameters: dict, metrics: dict) -> int:
-    """Save training run to database"""
+    """Save training run to database."""
     query = """
         INSERT INTO training_runs (model_name, dataset_name, hyperparameters, metrics)
         VALUES (%s, %s, %s, %s)
@@ -80,12 +94,12 @@ def save_training_run(model_name: str, dataset_name: str, hyperparameters: dict,
     return result[0]['run_id']
 
 def get_training_runs() -> list:
-    """Fetch all training runs"""
+    """Fetch all training runs."""
     query = "SELECT * FROM training_runs ORDER BY created_at DESC"
     return safe_execute(query, fetch=True)
 
 def save_dataset(name: str, description: str, size: int) -> int:
-    """Save dataset information"""
+    """Save dataset information."""
     query = """
         INSERT INTO datasets (name, description, size)
         VALUES (%s, %s, %s)
@@ -96,6 +110,6 @@ def save_dataset(name: str, description: str, size: int) -> int:
     return result[0]['dataset_id']
 
 def get_datasets() -> list:
-    """Fetch all datasets"""
+    """Fetch all datasets."""
     query = "SELECT * FROM datasets ORDER BY created_at DESC"
     return safe_execute(query, fetch=True)
